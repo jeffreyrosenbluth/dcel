@@ -1,12 +1,13 @@
-{-# LANGUAGE TypeFamilies    #-}
+{-# LANGUAGE InstanceSigs    #-}
 {-# LANGUAGE StrictData      #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies    #-}
 
 module DCEL where
 
 import           Control.Lens
-import qualified Data.Vector as V
-import           Data.Vector (Vector, (!?))
+import           Data.Vector  (Vector, (!?))
+import qualified Data.Vector  as V
 
 type EdgePointer   = Int
 type VertexPointer = Int
@@ -20,8 +21,8 @@ class Vertex a where
   newVertex :: a -> VertexPointer
 
 class Face a where
-  inner :: a -> FacePointer -> Maybe EdgePointer
-  outer :: a -> FacePointer -> Maybe EdgePointer
+  faceEdge :: a -> FacePointer -> Maybe EdgePointer
+  newFaces :: a -> (FacePointer, FacePointer)
 
 class HalfEdge a where
   source  :: a -> EdgePointer -> Maybe VertexPointer
@@ -32,7 +33,15 @@ class HalfEdge a where
   newEdge :: a -> (EdgePointer, EdgePointer)
 
 class (Vertex a, Face a, HalfEdge a) => DCEL a where
+  -- | addVertex dcel p h.
+  --   Add a new vertex v and a new edge (h1, h2) connecting u where u is
+  --   source(h) if it exists in the dcel. If g is next(h)
+  --   then set g's prev pointer to a new half edge h2 originating
+  --   at v. Set the next pointer of the twin of h to h1.
+  --   In other words when following the path starting with twin(h) we next
+  --   go to v and then back to u.
   addVertex :: a -> Coords a -> EdgePointer -> Maybe a
+  splitFace :: a -> VertexPointer -> EdgePointer -> Maybe a
 
 data Point = Point { _xCoord :: Double, _yCoord :: Double}
   deriving (Eq)
@@ -50,17 +59,11 @@ makeLenses ''Vertex2D
 instance Show Vertex2D where
   show (Vertex2D p e) = show e ++ "-" ++ show p
 
-data Face2D = Face2D
-  { _fInner :: Maybe EdgePointer
-  , _fOuter :: Maybe EdgePointer
-  } deriving (Eq)
+newtype Face2D = Face2D {_fEdge :: EdgePointer } deriving (Eq)
 makeLenses ''Face2D
 
 instance Show Face2D where
-  show (Face2D Nothing Nothing)   = "(_, _)"
-  show (Face2D Nothing (Just o))  = "(_, " ++ show o ++ ")"
-  show (Face2D (Just i) Nothing)  = "(" ++ show i ++ ", _)"
-  show (Face2D (Just i) (Just o)) = "(" ++ show i ++ ", " ++ show o ++ ")"
+  show (Face2D f)   = "f=" ++ show f
 
 data HalfEdge2D = HalfEdge2D
   { _hSource :: VertexPointer
@@ -94,8 +97,9 @@ instance Vertex VectorDCEL where
   newVertex dcel = V.length $ dcel ^. vertices
 
 instance Face VectorDCEL where
-  inner dcel n = dcel ^? faces . ix n >>= _fInner
-  outer dcel n = dcel ^? faces . ix n >>= _fOuter
+  faceEdge dcel n = dcel ^? faces . ix n . fEdge
+  newFaces dcel = let n = V.length $ dcel ^. faces
+                  in  (n, n+1)
 
 instance HalfEdge VectorDCEL where
   source dcel n = dcel ^? hEdges . ix n . hSource
@@ -107,26 +111,40 @@ instance HalfEdge VectorDCEL where
                   in  (n, n + 1)
 
 instance DCEL VectorDCEL where
-  addVertex dcel point hPtr = do
+  addVertex :: VectorDCEL -> Point -> EdgePointer -> Maybe VectorDCEL
+  addVertex dcel point hRef = do
     -- Get the pointer to the vertex u that the new edge will originate from.
-    uIdx <- twin dcel hPtr
-    f    <- face dcel hPtr
-    h    <- dcel ^? hEdges . ix hPtr
+    uRef <- twin dcel hRef
+    f    <- face dcel hRef
+    h    <- dcel ^? hEdges . ix hRef
         -- Create a new pointer to the new vertex.
-    let vIdx = newVertex dcel
-        -- Create new pointers to the new half edges.
-        (h1Idx, h2Idx) = newEdge dcel
-        n = next dcel hPtr
-        v = Vertex2D point h2Idx
-        h1 = HalfEdge2D uIdx f h2Idx (Just h2Idx) (Just hPtr)
-        h2 = HalfEdge2D vIdx f h1Idx n (Just h1Idx)
+    let vRef = newVertex dcel
+        -- Create new pointers, their associated half edges and the new
+        -- vertex.
+        (h1Ref, h2Ref) = newEdge dcel
+        n = next dcel hRef
+        v = Vertex2D point h2Ref
+        h1 = HalfEdge2D uRef f h2Ref (Just h2Ref) (Just hRef)
+        h2 = HalfEdge2D vRef f h1Ref n (Just h1Ref)
         -- Set the next pointer of hEdge to point to h1.
-        h' = h & hNext .~ Just h1Idx
+        h' = h & hNext .~ Just h1Ref
+        edges = (dcel ^. hEdges) & ix hRef .~ h'
         -- Set the prev pointer of (next hEdge) to h2.
-        edges = (dcel ^. hEdges) & ix hPtr .~ h'
         edges' = case n of
                    Nothing  -> edges
-                   Just i   -> edges & ix i . hPrev .~ Just h2Idx
+                   Just i   -> edges & ix i . hPrev .~ Just h2Ref
         edges'' = edges' `V.snoc` h1 `V.snoc` h2
     return $ dcel & vertices %~ flip V.snoc v
                   & hEdges .~ edges''
+
+  splitFace :: VectorDCEL -> VertexPointer -> EdgePointer -> Maybe VectorDCEL
+  splitFace dcel vRef hRef = do
+    uRef <- twin dcel hRef
+    let (f1Ref, f2Ref) = newFaces dcel
+        (h1Ref, h2Ref) = newEdge dcel
+        n = next dcel hRef
+        f1 = Face2D f1Ref
+        f2 = Face2D f2Ref
+        -- h1 = HalfEdge2D uRef _ h2Ref _ hRef
+        -- h2 = HalfEdge2D vRef _ h1Ref n _
+    return dcel

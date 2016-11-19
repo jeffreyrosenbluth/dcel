@@ -16,7 +16,7 @@ h10 = HalfEdge2D 1 0 0  Nothing (Just 3)
 h12 = HalfEdge2D 1 0 3 (Just 3) (Just 0)
 h21 = HalfEdge2D 2 0 2 (Just 1) (Just 2)
 
-f0 = Face2D (Just 0) Nothing
+f0 = Face2D 0
 
 v0 = Vertex2D p0 0
 v1 = Vertex2D p1 1
